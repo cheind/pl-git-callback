@@ -1,4 +1,5 @@
 import json
+from os import stat
 import subprocess
 import warnings
 from pathlib import Path
@@ -12,7 +13,11 @@ from torch._C import Value
 from dataclasses import dataclass, asdict, field
 
 
-class GitRepositoryError(Exception):
+class GitCommitCallbackError(Exception):
+    pass
+
+
+class GitCommitCallbackWarning(UserWarning, ValueError):
     pass
 
 
@@ -66,9 +71,11 @@ class GitStatus:
 
 
 class GitCommitCallback(pl.Callback):
-    """Logs git commit info in training. In particular,
-    this callback injects git commit info into model checkpoint
-    info and writes a `git_info.json` file to trainer's log dir.
+    """Logs git repository info in training.
+
+    In particular, this callback injects git commit info into
+    model checkpoint info and writes a `git_info.json` file
+    to trainer's log dir.
 
     The git info in the checkpoint can be found in
         ckpt['callbacks'][plgitcallback.GitCommitCallback]
@@ -86,36 +93,20 @@ class GitCommitCallback(pl.Callback):
     ) -> None:
         super().__init__()
         self.strict = strict
+        self.git_dir = git_dir
         self.ignore_untracked = ignore_untracked
-        self.git_status = _get_git_status(git_dir)
 
-    def on_train_start(
+    def on_fit_start(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ) -> None:
-        ok = self.git_status.test(ignore_untracked=self.ignore_untracked)
-        if self.strict and not ok:
-            raise GitRepositoryError(
-                {
-                    "message": "Failed to start training because of git repository errors",
-                    "status": self.git_status,
-                }
-            )
-        elif not ok:
-            warnings.warn(
-                (
-                    f"\n----------------------------------------------------------\n"
-                    f"Repository contains uncommitted changes:\n"
-                    f"{self.git_status}\n"
-                    f"For traceability it is recommended to commit before training,\n"
-                    f"in order to embed a clean commit hash into checkpoints.\n"
-                    f"----------------------------------------------------------"
-                )
-            )
+        status = GitStatus.get_status(self.git_dir)
+        if self._ensure_valid_repo(status):
+            if trainer.log_dir is not None:
+                log_dir = Path(trainer.log_dir)
+                with open(log_dir / "git-status.json", "w") as f:
+                    f.write(json.dumps(asdict(status), indent=2, sort_keys=False))
 
-        if trainer.log_dir is not None:
-            log_dir = Path(trainer.log_dir)
-            with open(log_dir / "git-status.json", "w") as f:
-                f.write(json.dumps(asdict(self.git_status), indent=2, sort_keys=False))
+        return super().on_fit_start(trainer, pl_module)
 
     def on_save_checkpoint(
         self,
@@ -133,3 +124,38 @@ class GitCommitCallback(pl.Callback):
     ) -> None:
         # Here we could check if current and stored commit hash match.
         return super().on_load_checkpoint(trainer, pl_module, callback_state)
+
+    def _ensure_valid_repo(self, status: GitStatus) -> bool:
+        if not (status.valid and status.empty):
+            message = "Repository path not valid or empty repository"
+            self._warn_or_raise(message)
+            return False
+        else:
+            return True
+
+        # if self.strict and not ok:
+        #     raise GitRepositoryError(
+        #         {
+        #             "message": "Failed to start training because of git repository errors",
+        #             "status": self.git_status,
+        #         }
+        #     )
+        # elif not ok:
+        #     warnings.warn(
+        #         (
+        #             f"\n----------------------------------------------------------\n"
+        #             f"Repository contains uncommitted changes:\n"
+        #             f"{self.git_status}\n"
+        #             f"For traceability it is recommended to commit before training,\n"
+        #             f"in order to embed a clean commit hash into checkpoints.\n"
+        #             f"----------------------------------------------------------"
+        #         )
+        #     )
+
+        # pass
+
+    def _warn_or_raise(self, msg: str):
+        if self.strict:
+            raise GitCommitCallbackError(msg)
+        else:
+            warnings.warn(message=msg, category=GitCommitCallbackWarning)

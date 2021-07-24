@@ -103,7 +103,6 @@ def test_gitstatus(tmp_git_repo):
     with open(rpath / "hugo.txt", "w") as f:
         f.write("update")
     status = GitStatus.get_status(rpath)
-    # repo.index.add("hugo.txt")
     assert status.valid
     assert not status.empty
     assert status.dirty
