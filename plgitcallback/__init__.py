@@ -2,7 +2,8 @@ import json
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Union, List
+from typing import Any, Dict, Union, List, Optional
+from contextlib import contextmanager
 
 import git
 import pytorch_lightning as pl
@@ -11,26 +12,57 @@ from torch._C import Value
 from dataclasses import dataclass, asdict, field
 
 
-@dataclass
+class GitRepositoryError(Exception):
+    pass
+
+
+@contextmanager
+def open_repo(*args, **kwargs):
+    repo = git.Repo(*args, **kwargs)
+    try:
+        yield repo
+    finally:
+        repo.close()
+
+
+@dataclass(frozen=True)
 class GitStatus:
     valid: bool = False
-    empty: bool = False
-    dirty: bool = False
-    commit_hash: str = None
+    empty: Optional[bool] = None
+    dirty: Optional[bool] = None
+    commit_hash: Optional[str] = None
+    branch_name: Optional[str] = None
     untracked_files: List[str] = field(default_factory=list)
+    # repo.remotes.origin.url
 
-    def test(self, ignore_commit: bool = False, ignore_untracked: bool = True):
-        return (
-            self.valid
-            and not self.empty
-            and (ignore_commit or self.commit_hash is not None)
-            and not self.dirty
-            and (ignore_untracked or len(self.untracked_files) == 0)
-        )
+    @staticmethod
+    def get_status(git_dir: Union[str, Path]) -> "GitStatus":
+        path = Path(git_dir).resolve()
 
+        # Check if valid path
+        if not path.is_dir():
+            return GitStatus(valid=False)
 
-class RepositoryError(Exception):
-    pass
+        with open_repo(str(path), search_parent_directories=True) as repo:
+            repo: git.Repo
+            try:
+                _ = repo.git_dir  # Check if valid git-dir
+            except git.exc.InvalidGitRepositoryError:
+                return GitStatus(valid=False)
+            branch = repo.active_branch
+            if not branch.is_valid():
+                return GitStatus(
+                    valid=True, empty=True, untracked_files=repo.untracked_files
+                )
+            else:
+                return GitStatus(
+                    valid=True,
+                    empty=False,
+                    dirty=repo.is_dirty(),
+                    commit_hash=repo.head.object.hexsha,
+                    branch_name=branch.name,
+                    untracked_files=repo.untracked_files,
+                )
 
 
 class GitCommitCallback(pl.Callback):
@@ -62,7 +94,7 @@ class GitCommitCallback(pl.Callback):
     ) -> None:
         ok = self.git_status.test(ignore_untracked=self.ignore_untracked)
         if self.strict and not ok:
-            raise RepositoryError(
+            raise GitRepositoryError(
                 {
                     "message": "Failed to start training because of git repository errors",
                     "status": self.git_status,
@@ -101,28 +133,3 @@ class GitCommitCallback(pl.Callback):
     ) -> None:
         # Here we could check if current and stored commit hash match.
         return super().on_load_checkpoint(trainer, pl_module, callback_state)
-
-
-def _get_git_status(git_dir: Union[str, Path]) -> GitStatus:
-    repo = git.Repo(str(Path(git_dir).resolve()), search_parent_directories=True)
-    try:
-        repo.git_dir  # causes exception if not a git-dir
-        if not repo.active_branch.is_valid():
-            return GitStatus(
-                valid=True,
-                empty=True,
-                dirty=repo.is_dirty(),
-                untracked_files=repo.untracked_files,
-            )
-        else:
-            return GitStatus(
-                valid=True,
-                empty=False,
-                dirty=repo.is_dirty(),
-                commit_hash=repo.head.object.hexsha,
-                untracked_files=repo.untracked_files,
-            )
-    except git.exc.InvalidGitRepositoryError:
-        return GitStatus(valid=False)
-    finally:
-        repo.close()

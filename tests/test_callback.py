@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
-from plgitcallback import GitCommitCallback, RepositoryError, _get_git_status
+from plgitcallback import GitCommitCallback, GitRepositoryError, GitStatus
 import tempfile
 
 IS_TRAVIS = "TRAVIS" in os.environ
@@ -68,34 +68,63 @@ def tmp_git_repo():
 
 def test_gitstatus(tmp_git_repo):
     repo, rpath = tmp_git_repo
-    status = _get_git_status(rpath)
+    status = GitStatus.get_status(rpath)
     assert status.valid
     assert status.empty
-    assert not status.dirty
+    assert status.dirty is None
     assert status.commit_hash is None
+    assert status.branch_name is None
 
     open(rpath / "hugo.txt", "w").write("hello")
-    status = _get_git_status(rpath)
+    status = GitStatus.get_status(rpath)
     assert status.valid
     assert status.empty
-    assert not status.dirty
+    assert status.dirty is None
+    assert status.branch_name is None
     assert len(status.untracked_files) == 1
 
     repo.index.add("hugo.txt")
-    status = _get_git_status(rpath)
+    status = GitStatus.get_status(rpath)
     assert status.valid
     assert status.empty
-    assert status.dirty
+    assert status.dirty is None
+    assert status.branch_name is None
     assert len(status.untracked_files) == 0
 
     # Commit file
     repo.git.commit("-m", "test commit")
-    status = _get_git_status(rpath)
+    status = GitStatus.get_status(rpath)
     assert status.valid
     assert not status.empty
     assert not status.dirty
+    assert status.branch_name == "master"
     assert len(status.untracked_files) == 0
-    assert status.test()
+
+    with open(rpath / "hugo.txt", "w") as f:
+        f.write("update")
+    status = GitStatus.get_status(rpath)
+    # repo.index.add("hugo.txt")
+    assert status.valid
+    assert not status.empty
+    assert status.dirty
+    assert status.branch_name == "master"
+    assert len(status.untracked_files) == 0
+
+    repo.index.add("hugo.txt")
+    status = GitStatus.get_status(rpath)
+    assert status.valid
+    assert not status.empty
+    assert status.dirty
+    assert status.branch_name == "master"
+    assert len(status.untracked_files) == 0
+
+    repo.git.commit("-m", "test commit")
+    status = GitStatus.get_status(rpath)
+    assert status.valid
+    assert not status.empty
+    assert not status.dirty
+    assert status.branch_name == "master"
+    assert len(status.untracked_files) == 0
 
 
 def test_gitcommitcallback_trainstart(tmp_git_repo):
