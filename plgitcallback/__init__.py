@@ -3,8 +3,10 @@ from os import stat
 import subprocess
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Union, List, Optional
+from typing import Any, Dict, Union, List, Optional, Literal
 from contextlib import contextmanager
+import logging
+import time
 
 import git
 import pytorch_lightning as pl
@@ -21,6 +23,9 @@ class GitCommitCallbackWarning(UserWarning, ValueError):
     pass
 
 
+_logger = logging.getLogger(__name__)
+
+
 @contextmanager
 def open_repo(*args, **kwargs):
     repo = git.Repo(*args, **kwargs)
@@ -32,13 +37,15 @@ def open_repo(*args, **kwargs):
 
 @dataclass(frozen=True)
 class GitStatus:
-    valid: bool = False
-    empty: Optional[bool] = None
-    dirty: Optional[bool] = None
-    commit_hash: Optional[str] = None
-    branch_name: Optional[str] = None
-    untracked_files: List[str] = field(default_factory=list)
-    # repo.remotes.origin.url
+    valid: bool = False  # Indicates a valid repo
+    empty: Optional[bool] = None  # No commits yet
+    dirty: Optional[
+        bool
+    ] = None  # Like a git-status without untracked files (index or working copy changes that are not committed)
+    num_untracked_files: Optional[bool] = None  # Any untracked files
+    commit_hash: Optional[str] = None  # Commit hash
+    commit_date: Optional[int] = None  # Commit data in number of seconds since epoch
+    branch_name: Optional[str] = None  # Current branch name
 
     @staticmethod
     def get_status(git_dir: Union[str, Path]) -> "GitStatus":
@@ -56,18 +63,24 @@ class GitStatus:
                 return GitStatus(valid=False)
             branch = repo.active_branch
             if not branch.is_valid():
-                return GitStatus(
-                    valid=True, empty=True, untracked_files=repo.untracked_files
-                )
+                return GitStatus(valid=True, empty=True)
             else:
                 return GitStatus(
                     valid=True,
                     empty=False,
                     dirty=repo.is_dirty(),
-                    commit_hash=repo.head.object.hexsha,
+                    num_untracked_files=len(repo.untracked_files),
+                    commit_hash=repo.head.commit.hexsha,
+                    commit_date=repo.head.commit.committed_date,
                     branch_name=branch.name,
-                    untracked_files=repo.untracked_files,
                 )
+
+    def commit_info(self) -> str:
+        return f"git(commit={self.commit_hash},commit_date={self.asc_commit_date}"
+
+    @property
+    def asc_commit_date(self):
+        return time.asctime(time.gmtime(self.commit_date))
 
 
 class GitCommitCallback(pl.Callback):
@@ -88,23 +101,29 @@ class GitCommitCallback(pl.Callback):
     def __init__(
         self,
         git_dir: Union[str, Path] = ".",
-        ignore_untracked: bool = True,
-        strict: bool = False,
+        mode: Literal["relaxed", "strict"] = "relaxed",
     ) -> None:
         super().__init__()
-        self.strict = strict
+        self.mode = mode
         self.git_dir = git_dir
-        self.ignore_untracked = ignore_untracked
+        self.git_status = GitStatus.get_status(git_dir)
+        self.disabled = not self.git_status.valid
+        if self.disabled:
+            self._warn("GitCommitCallback disabled, not a valid git repository.")
 
     def on_fit_start(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ) -> None:
-        status = GitStatus.get_status(self.git_dir)
-        if self._ensure_valid_repo(status):
-            if trainer.log_dir is not None:
-                log_dir = Path(trainer.log_dir)
-                with open(log_dir / "git-status.json", "w") as f:
-                    f.write(json.dumps(asdict(status), indent=2, sort_keys=False))
+        if not self.disabled and (self.git_status.empty or self.git_status.dirty):
+            self._warn_or_raise(
+                "Repository is not in a clean state. Please commit before you train."
+            )
+
+        if not self.disabled and trainer.log_dir is not None:
+            log_dir = Path(trainer.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(log_dir / "git-status.json", "w") as f:
+                f.write(json.dumps(asdict(self.git_status), indent=2, sort_keys=False))
 
         return super().on_fit_start(trainer, pl_module)
 
@@ -114,7 +133,10 @@ class GitCommitCallback(pl.Callback):
         pl_module: "pl.LightningModule",
         checkpoint: Dict[str, Any],
     ) -> dict:
-        return asdict(self.git_status)
+        if not self.disabled:
+            return asdict(self.git_status) if not self.disabled else None
+        else:
+            return None
 
     def on_load_checkpoint(
         self,
@@ -122,40 +144,25 @@ class GitCommitCallback(pl.Callback):
         pl_module: "pl.LightningModule",
         callback_state: Dict[str, Any],
     ) -> None:
-        # Here we could check if current and stored commit hash match.
+        if not self.disabled and callback_state is None:
+            self._warn_or_raise("Loaded state does not contain git-status information.")
+        load_status = GitStatus(**callback_state)
+        if not self.disabled and load_status != self.git_status:
+            self._warn_or_raise(
+                f"Git status mismatch between loaded state {load_status.commit_info()} and current state {self.git_status.commit_info()}"
+            )
         return super().on_load_checkpoint(trainer, pl_module, callback_state)
 
-    def _ensure_valid_repo(self, status: GitStatus) -> bool:
-        if not (status.valid and status.empty):
-            message = "Repository path not valid or empty repository"
-            self._warn_or_raise(message)
-            return False
-        else:
-            return True
-
-        # if self.strict and not ok:
-        #     raise GitRepositoryError(
-        #         {
-        #             "message": "Failed to start training because of git repository errors",
-        #             "status": self.git_status,
-        #         }
-        #     )
-        # elif not ok:
-        #     warnings.warn(
-        #         (
-        #             f"\n----------------------------------------------------------\n"
-        #             f"Repository contains uncommitted changes:\n"
-        #             f"{self.git_status}\n"
-        #             f"For traceability it is recommended to commit before training,\n"
-        #             f"in order to embed a clean commit hash into checkpoints.\n"
-        #             f"----------------------------------------------------------"
-        #         )
-        #     )
-
-        # pass
-
     def _warn_or_raise(self, msg: str):
-        if self.strict:
-            raise GitCommitCallbackError(msg)
+        if self.mode == "strict":
+            self._error(msg)
         else:
-            warnings.warn(message=msg, category=GitCommitCallbackWarning)
+            self._warn(msg)
+
+    def _warn(self, msg):
+        _logger.warning(msg)
+        warnings.warn(message=msg, category=GitCommitCallbackWarning)
+
+    def _error(self, msg):
+        _logger.error(msg)
+        raise GitCommitCallbackError(msg)
