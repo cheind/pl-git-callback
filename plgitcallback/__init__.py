@@ -19,13 +19,13 @@ class GitStatus:
     commit_hash: str = None
     untracked_files: List[str] = field(default_factory=list)
 
-    @property
-    def all_ok(self):
+    def test(self, ignore_commit: bool = False, ignore_untracked: bool = True):
         return (
             self.valid
             and not self.empty
+            and (ignore_commit or self.commit_hash is not None)
             and not self.dirty
-            and len(self.untracked_files) == 0
+            and (ignore_untracked or len(self.untracked_files) == 0)
         )
 
 
@@ -49,23 +49,26 @@ class GitCommitCallback(pl.Callback):
     def __init__(
         self,
         git_dir: Union[str, Path] = ".",
+        ignore_untracked: bool = True,
         strict: bool = False,
     ) -> None:
         super().__init__()
         self.strict = strict
+        self.ignore_untracked = ignore_untracked
         self.git_status = _get_git_status(git_dir)
 
     def on_train_start(
         self, trainer: "pl.Trainer", pl_module: "pl.LightningModule"
     ) -> None:
-        if self.strict and not self.git_status.all_ok:
+        ok = self.git_status.test(ignore_untracked=self.ignore_untracked)
+        if self.strict and not ok:
             raise RepositoryError(
                 {
                     "message": "Failed to start training because of git repository errors",
                     "status": self.git_status,
                 }
             )
-        elif not self.git_status.all_ok:
+        elif not ok:
             warnings.warn(
                 (
                     f"\n----------------------------------------------------------\n"

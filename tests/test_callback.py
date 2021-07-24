@@ -95,6 +95,7 @@ def test_gitstatus(tmp_git_repo):
     assert not status.empty
     assert not status.dirty
     assert len(status.untracked_files) == 0
+    assert status.test()
 
 
 def test_gitcommitcallback_trainstart(tmp_git_repo):
@@ -107,12 +108,12 @@ def test_gitcommitcallback_trainstart(tmp_git_repo):
     with tempfile.TemporaryDirectory() as tmp:
         trainer = MyTrainer(tmp)
 
-        cb = GitCommitCallback(rpath, strict=False)
+        cb = GitCommitCallback(rpath, strict=False, ignore_untracked=True)
         with pytest.warns(UserWarning):
             cb.on_train_start(trainer, None)
             assert (Path(tmp) / "git-status.json").is_file()
 
-        cb = GitCommitCallback(rpath, strict=True)
+        cb = GitCommitCallback(rpath, strict=True, ignore_untracked=True)
         with pytest.raises(RepositoryError):
             cb.on_train_start(trainer, None)
 
