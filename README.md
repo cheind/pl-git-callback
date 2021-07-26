@@ -2,12 +2,12 @@
 
 This library provides a PyTorch-Lightning callback to increase model reproducibility through enforcing specific git repository states upon training and validation.
 
-## The Issue
+## Problem
 Reproducibility is key to the scientific approach. For ML, reproducibility is an equally important concern [1], since minimal differences in implementations (e.g. varying random seeds, model initialisation, etc.) can lead to highly divergent benchmark results.
 
 PyTorch-Lightning already includes mechanisms to increase reproducibility, but to our knowledge no mechanism is yet foreseen to ensure that models conform to a certain code base. One is free to change the source code of a model (to a certain extent) without actually breaking existing checkpoints.
 
-## Goal
+## Contribution
 
 This callback is designed to increase reproducibility at source code level. On the one hand, it ensures that the code repository is in a clean state before training and that there are no uncommitted changes. Secondly, it injects commit information into the checkpoints created during training so that you can better track the associated source code revision. Finally, the callback ensures that loaded checkpoints are compatible with the current state of the repository.
 ## Usage
