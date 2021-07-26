@@ -26,7 +26,7 @@ trainer.fit(model, DataLoader(ds_train), DataLoader(ds_val))
 ```
 
 ## Install 
-```bash
+```
 pip install git+https://github.com/cheind/pl-git-callback.git#egg=pl-git-callback[dev]
 ```
 
