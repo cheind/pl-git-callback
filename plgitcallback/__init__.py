@@ -171,4 +171,5 @@ def gitstatus_from_json(fp) -> Optional[GitStatus]:
 
 
 def gitstatus_from_lightning_checkpoint(ckpt: Dict[Any, Any]):
+    """Returns GitStatus from lightning checkpoint file."""
     return GitStatus(**ckpt["callbacks"][GitCommitCallback])
