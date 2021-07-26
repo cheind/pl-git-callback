@@ -12,10 +12,14 @@ import pytorch_lightning as pl
 
 
 class GitCommitCallbackError(Exception):
+    """Error thrown when commit inconsistencies are detected in strict mode."""
+
     pass
 
 
 class GitCommitCallbackWarning(UserWarning, ValueError):
+    """Warning issued when commit inconsistencies are detected in relaxed mode."""
+
     pass
 
 
@@ -24,6 +28,7 @@ _logger = logging.getLogger(__name__)
 
 @contextmanager
 def open_repo(*args, **kwargs):
+    """Yields a git.Repo and ensures closing."""
     repo = git.Repo(*args, **kwargs)
     try:
         yield repo
@@ -33,6 +38,8 @@ def open_repo(*args, **kwargs):
 
 @dataclass(frozen=True)
 class GitStatus:
+    """Describes the relevant state of a git repository."""
+
     empty: Optional[bool] = None  # No commits yet
     dirty: Optional[
         bool
@@ -51,18 +58,49 @@ class GitStatus:
 
 
 class GitCommitCallback(pl.Callback):
-    """Logs git repository info in training.
+    """This callback increases model reproducibility by enforcing
+    specific git repository states upon training.
 
-    In particular, this callback injects git commit info into
-    model checkpoint info and writes a `git_info.json` file
-    to trainer's log dir.
+    Reproducibility is key to the scientific approach. For ML
+    reproducibility is a major concern [1], since tiny details of
+    implementation differences (random seeds, model initialization,
+    etc...) may lead to hugely diverging benchmark results.
 
-    The git info in the checkpoint can be found in
-        ckpt['callbacks'][plgitcallback.GitCommitCallback]
+    PyTorch-Lightning already incorporates mechanisms to increase
+    reproducibility, but no mechanism is provided to ensure
+    models have the same code basis. One might happily change
+    the source code of a model (to some extend), without having
+    existing checkpoints break.
 
-    When `strict` is true, the callback will raise an
-    RepositoryError when uncommitted changes have been
-    detected and thus stops training.
+    This callback is meant to increase reproducibility on a
+    source code level. For one, it ensures that before training
+    the code repository is in a clean state and no uncommitted
+    changes are present. Second, it injects commit information
+    to checkpoints generated in training, so you can better
+    track associated source code. And finally, the callback
+    ensures that loaded checkpoints are compatible with the
+    current repository state.
+
+    Logging
+    -------
+    This callback injects git commit info into model checkpoints and
+    writes a `git_info.json` file to trainer's log dir.
+
+    To extract GitStatus information from a pytorch-lightning
+    checkpoint file see `gitstatus_from_lightning_checkpoint`.
+
+    Operation modes
+    ---------------
+    The callback currently operates in either `strict` or `relaxed`
+    mode. The difference being that `strict` mode leads to exceptions
+    when a commit inconsistency is detected whereas `relaxed` causes
+    only warnings. Hence, in `strict` mode the training usually is
+    forcefully cancelled when for example uncommitted changes are
+    detected.
+
+    References
+    ----------
+    [1] https://sites.google.com/view/icml-reproducibility-workshop/icml2017
     """
 
     def __init__(
