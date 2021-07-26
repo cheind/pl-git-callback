@@ -1,18 +1,14 @@
 import json
-from os import stat
-import subprocess
-import warnings
-from pathlib import Path
-from typing import Any, Dict, Union, List, Optional, Literal
-from contextlib import contextmanager
 import logging
 import time
+import warnings
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, Literal, Optional, Union
 
 import git
 import pytorch_lightning as pl
-from torch._C import Value
-
-from dataclasses import dataclass, asdict, field
 
 
 class GitCommitCallbackError(Exception):
