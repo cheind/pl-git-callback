@@ -16,6 +16,9 @@ from plgitcallback import (
     GitCommitCallbackError,
     GitCommitCallbackWarning,
     GitStatus,
+    gitstatus_from_json,
+    gitstatus_from_lightning_checkpoint,
+    gitstatus_from_repository,
 )
 import tempfile
 import json
@@ -85,24 +88,25 @@ def update_file(
 
 def test_gitstatus(tmp_git_repo):
     repo, rpath = tmp_git_repo
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+
+    status = gitstatus_from_repository("not/here/path")
+    assert status is None
+
+    status = gitstatus_from_repository(rpath)
     assert status.empty
     assert status.dirty is None
     assert status.commit_hash is None
     assert status.branch_name is None
 
     update_file(repo, rpath, "test.txt", stage=False, commit=False)
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+    status = gitstatus_from_repository(rpath)
     assert status.empty
     assert status.dirty is None
     assert status.branch_name is None
     assert status.num_untracked_files == 1
 
     update_file(repo, rpath, "test.txt", stage=True, commit=False)
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+    status = gitstatus_from_repository(rpath)
     assert status.empty
     assert status.dirty is None
     assert status.branch_name is None
@@ -110,16 +114,14 @@ def test_gitstatus(tmp_git_repo):
 
     # Commit file
     update_file(repo, rpath, "test.txt", stage=True, commit=True)
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+    status = gitstatus_from_repository(rpath)
     assert not status.empty
     assert not status.dirty
     assert status.branch_name == "master"
     assert status.num_untracked_files == 0
 
     update_file(repo, rpath, "test.txt", stage=False, commit=False)
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+    status = gitstatus_from_repository(rpath)
     assert not status.empty
     assert status.dirty
     assert status.branch_name == "master"
@@ -129,13 +131,12 @@ def test_gitstatus(tmp_git_repo):
 
     t = time.time()
     update_file(repo, rpath, "test.txt", stage=True, commit=True)
-    status = GitStatus.get_status(rpath)
-    assert status.valid
+    status = gitstatus_from_repository(rpath)
     assert not status.empty
     assert not status.dirty
     assert status.branch_name == "master"
     assert status.num_untracked_files == 0
-    assert abs(t - status.commit_date) < 1.0
+    assert abs(t - status.commit_date) < 5.0
 
 
 def test_gitcommitcallback_fitstart(tmp_git_repo, tmp_path):
@@ -149,6 +150,7 @@ def test_gitcommitcallback_fitstart(tmp_git_repo, tmp_path):
 
     # Repo at this point is not clean
     cb = GitCommitCallback(rpath, mode="relaxed")
+    print(cb.git_status)
     with pytest.warns(GitCommitCallbackWarning):
         cb.on_fit_start(trainer, None)
         assert (Path(tmp_path) / "git-status.json").is_file()
@@ -166,12 +168,13 @@ def test_gitcommitcallback_fitstart(tmp_git_repo, tmp_path):
     cb = GitCommitCallback(rpath, mode="strict")
     cb.on_fit_start(trainer, None)
     assert Path(trainer.log_dir / "git-status.json").is_file()
-    data = json.load(open(trainer.log_dir / "git-status.json"))
-    assert data["branch_name"] == "master"
-    assert data["commit_hash"] == repo.head.object.hexsha
-    assert abs(data["commit_date"] - time.time()) < 1
-    assert data["valid"]
-    assert not data["empty"]
+
+    loaded_status = gitstatus_from_json(open(trainer.log_dir / "git-status.json"))
+    assert loaded_status is not None
+    assert loaded_status.branch_name == "master"
+    assert loaded_status.commit_hash == repo.head.object.hexsha
+    assert not loaded_status.empty
+    assert abs(loaded_status.commit_date - time.time()) < 5
 
 
 def test_gitcommitcallback_saveckpt(tmp_git_repo, tmp_path):
@@ -185,9 +188,10 @@ def test_gitcommitcallback_saveckpt(tmp_git_repo, tmp_path):
     trainer = pl.Trainer(max_epochs=1, callbacks=[cb, cp])
     trainer.fit(model, DataLoader(ds_train), DataLoader(ds_val))
     ckpt = torch.load(Path(trainer.log_dir) / "checkpoints" / "mymodel.ckpt")
-    assert GitCommitCallback in ckpt["callbacks"]
-    status_saved = GitStatus(**ckpt["callbacks"][GitCommitCallback])
-    assert status_saved == cb.git_status
+
+    loaded_status = gitstatus_from_lightning_checkpoint(ckpt)
+    assert loaded_status is not None
+    assert loaded_status == cb.git_status
 
 
 def test_gitcommitcallback_loadckpt(tmp_git_repo, tmp_path):
@@ -202,7 +206,7 @@ def test_gitcommitcallback_loadckpt(tmp_git_repo, tmp_path):
     trainer.fit(model, DataLoader(ds_train), DataLoader(ds_val))
     ckpt_file = Path(trainer.log_dir) / "checkpoints" / "mymodel.ckpt"
 
-    # later
+    # later time, resume training from checkpoint with no commit changes
     cb = GitCommitCallback(git_dir=rpath, mode="strict")
     trainer = pl.Trainer(
         max_epochs=1,
@@ -211,7 +215,7 @@ def test_gitcommitcallback_loadckpt(tmp_git_repo, tmp_path):
     )
     trainer.fit(model, DataLoader(ds_train), DataLoader(ds_val))
 
-    # later with changes
+    # later time, resume changes with a different commit
     update_file(repo, rpath, "test.txt", stage=True, commit=True)
     cb = GitCommitCallback(git_dir=rpath, mode="strict")
     trainer = pl.Trainer(
@@ -222,6 +226,7 @@ def test_gitcommitcallback_loadckpt(tmp_git_repo, tmp_path):
     with pytest.raises(GitCommitCallbackError):
         trainer.fit(model, DataLoader(ds_train), DataLoader(ds_val))
 
+    # same as above, but in relaxed mode
     cb = GitCommitCallback(git_dir=rpath, mode="relaxed")
     trainer = pl.Trainer(
         max_epochs=1,

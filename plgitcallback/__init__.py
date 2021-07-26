@@ -37,7 +37,6 @@ def open_repo(*args, **kwargs):
 
 @dataclass(frozen=True)
 class GitStatus:
-    valid: bool = False  # Indicates a valid repo
     empty: Optional[bool] = None  # No commits yet
     dirty: Optional[
         bool
@@ -46,34 +45,6 @@ class GitStatus:
     commit_hash: Optional[str] = None  # Commit hash
     commit_date: Optional[int] = None  # Commit data in number of seconds since epoch
     branch_name: Optional[str] = None  # Current branch name
-
-    @staticmethod
-    def get_status(git_dir: Union[str, Path]) -> "GitStatus":
-        path = Path(git_dir).resolve()
-
-        # Check if valid path
-        if not path.is_dir():
-            return GitStatus(valid=False)
-
-        with open_repo(str(path), search_parent_directories=True) as repo:
-            repo: git.Repo
-            try:
-                _ = repo.git_dir  # Check if valid git-dir
-            except git.exc.InvalidGitRepositoryError:
-                return GitStatus(valid=False)
-            branch = repo.active_branch
-            if not branch.is_valid():
-                return GitStatus(valid=True, empty=True)
-            else:
-                return GitStatus(
-                    valid=True,
-                    empty=False,
-                    dirty=repo.is_dirty(),
-                    num_untracked_files=len(repo.untracked_files),
-                    commit_hash=repo.head.commit.hexsha,
-                    commit_date=repo.head.commit.committed_date,
-                    branch_name=branch.name,
-                )
 
     def commit_info(self) -> str:
         return f"git(commit={self.commit_hash},commit_date={self.asc_commit_date}"
@@ -106,8 +77,8 @@ class GitCommitCallback(pl.Callback):
         super().__init__()
         self.mode = mode
         self.git_dir = git_dir
-        self.git_status = GitStatus.get_status(git_dir)
-        self.disabled = not self.git_status.valid
+        self.git_status = gitstatus_from_repository(git_dir)
+        self.disabled = self.git_status is None
         if self.disabled:
             self._warn("GitCommitCallback disabled, not a valid git repository.")
 
@@ -166,3 +137,42 @@ class GitCommitCallback(pl.Callback):
     def _error(self, msg):
         _logger.error(msg)
         raise GitCommitCallbackError(msg)
+
+
+def gitstatus_from_repository(git_dir: Union[str, Path]) -> Optional[GitStatus]:
+    path = Path(git_dir).resolve()
+
+    # Check if valid path
+    if not path.is_dir():
+        return None
+
+    with open_repo(str(path), search_parent_directories=True) as repo:
+        repo: git.Repo
+        try:
+            _ = repo.git_dir  # Check if valid git-dir
+        except git.exc.InvalidGitRepositoryError:
+            return None
+        branch = repo.active_branch
+        if not branch.is_valid():
+            return GitStatus(empty=True, num_untracked_files=len(repo.untracked_files))
+        else:
+            return GitStatus(
+                empty=False,
+                dirty=repo.is_dirty(),
+                num_untracked_files=len(repo.untracked_files),
+                commit_hash=repo.head.commit.hexsha,
+                commit_date=repo.head.commit.committed_date,
+                branch_name=branch.name,
+            )
+
+
+def gitstatus_from_json(fp) -> Optional[GitStatus]:
+    """Return GitStatus from json-dict like object deserialized from `fp`."""
+    try:
+        return GitStatus(**json.load(fp))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def gitstatus_from_lightning_checkpoint(ckpt: Dict[Any, Any]):
+    return GitStatus(**ckpt["callbacks"][GitCommitCallback])
