@@ -1,0 +1,15 @@
+language: python
+python:
+- 3.8
+- 3.9
+cache:
+  pip: true
+install:
+- pip install -r requirements/common.txt
+- pip install -r requirements/dev.txt
+script:
+- pytest
+notifications:
+  email:
+    on_success: never
+    on_failure: never
