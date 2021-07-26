@@ -47,5 +47,11 @@ checkpoint file see function `plgitcallback.gitstatus_from_lightning_checkpoint`
 ## Open Issues
 - PyTorch-Lightning seems to not call `on_load_checkpoint` when only validating/testing a model, hence bypassing the comparison logic of `GitCommitCallback`. See https://github.com/PyTorchLightning/pytorch-lightning/issues/8550
 
+## Testing
+Run all tests via
+```bash
+pytest
+```
+
 ## References
 [1] https://sites.google.com/view/icml-reproducibility-workshop/icml2017
