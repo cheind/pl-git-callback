@@ -33,10 +33,9 @@ pip install git+https://github.com/cheind/pl-git-callback.git#egg=pl-git-callbac
 ## Operation modes
 The callback currently operates in either `strict` or `relaxed`
 mode. The difference being that `strict` mode leads to exceptions
-when a commit inconsistency is detected whereas `relaxed` causes
-only warnings. Hence, in `strict` mode the training usually is
-forcefully cancelled when for example uncommitted changes are
-detected.
+when a commit inconsistency is detected whereas `relaxed` raises
+warnings. Hence, in `strict` mode the training stops when for 
+example uncommitted changes are detected.
 
 ## Logging
 This callback injects git commit info into model checkpoints and
